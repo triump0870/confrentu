@@ -1,2 +1,0 @@
-# confrentu
-A Conference App
