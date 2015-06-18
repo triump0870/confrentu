@@ -1,16 +1,6 @@
 #!/usr/bin/env python
 
-"""models.py
-
-Udacity conference server-side Python App Engine data & ProtoRPC models
-
-$Id: models.py,v 1.1 2014/05/24 22:01:10 wesc Exp $
-
-created/forked from conferences.py by wesc on 2014 may 24
-
-"""
-
-__author__ = 'wesc+api@google.com (Wesley Chun)'
+__author__ = 'b4you0870@google.com (Rohan Roy)'
 
 import httplib
 import endpoints
@@ -55,5 +45,34 @@ class TeeShirtSize(messages.Enum):
     XL_W = 11
     XXL_M = 12
     XXL_W = 13
-    XXXL_M = 14
+    XXXL_M = 14 
     XXXL_W = 15
+
+class Conference(ndb.Model):
+    """Conference -- Conference Object"""
+    conferenceId    = ndb.StringProperty()
+    name            = ndb.StringProperty(required=True)
+    organizerUserId = ndb.StringProperty()
+    city            = ndb.StringProperty()
+    description     = ndb.TextProperty()
+    topics          = ndb.StringProperty(repeated=True)
+    startDate       = ndb.DateTimeProperty()
+    month           = ndb.IntegerProperty()
+    endDate         = ndb.DateTimeProperty()
+    maxAttendees    = ndb.IntegerProperty()
+    seatAvailable   = ndb.IntegerProperty()
+
+class ConferenceForm(messages.Message):
+    """ConferenceForm -- Insert conference details"""
+    name            = messages.StringField(1)
+    description     = messages.StringField(2)
+    organizerUserId = messages.StringField(3)
+    topics          = messages.StringField(4, repeated=True)
+    city            = messages.StringField(5)
+    startDate       = messages.StringField(6)
+    month           = messages.IntegerField(7)
+    maxAttendees    = messages.IntegerField(8)
+    seatsAvailable  = messages.IntegerField(9)
+    endDate         = messages.StringField(10)
+    websafeKey      = messages.StringField(11)
+    organizerDisplayName = messages.StringField(12)
