@@ -49,21 +49,20 @@ class TeeShirtSize(messages.Enum):
     XXXL_W = 15
 
 class Conference(ndb.Model):
-    """Conference -- Conference Object"""
-    conferenceId    = ndb.StringProperty()
+    """Conference -- Conference object"""
     name            = ndb.StringProperty(required=True)
+    description     = ndb.StringProperty()
     organizerUserId = ndb.StringProperty()
-    city            = ndb.StringProperty()
-    description     = ndb.TextProperty()
     topics          = ndb.StringProperty(repeated=True)
-    startDate       = ndb.DateTimeProperty()
+    city            = ndb.StringProperty()
+    startDate       = ndb.DateProperty()
     month           = ndb.IntegerProperty()
-    endDate         = ndb.DateTimeProperty()
+    endDate         = ndb.DateProperty()
     maxAttendees    = ndb.IntegerProperty()
-    seatAvailable   = ndb.IntegerProperty()
+    seatsAvailable  = ndb.IntegerProperty()
 
 class ConferenceForm(messages.Message):
-    """ConferenceForm -- Insert conference details"""
+    """ConferenceForm -- Conference outbound form message"""
     name            = messages.StringField(1)
     description     = messages.StringField(2)
     organizerUserId = messages.StringField(3)
@@ -76,3 +75,17 @@ class ConferenceForm(messages.Message):
     endDate         = messages.StringField(10)
     websafeKey      = messages.StringField(11)
     organizerDisplayName = messages.StringField(12)
+
+class ConferenceForms(messages.Message):
+    """ConferenceForms -- multiple Conference outbound form message"""
+    items = messages.MessageField(ConferenceForm, 1, repeated=True)
+
+class ConferenceQueryForm(messages.Message):
+    """ConferenceQueryForm -- Conference query inbound form message"""
+    field = messages.StringField(1)
+    operator = messages.StringField(2)
+    value = messages.StringField(3)
+
+class ConferenceQueryForms(messages.Message):
+    """ConferenceQueryForms -- multiple ConferenceQueryForm inbound form message"""
+    filters = messages.MessageField(ConferenceQueryForm, 1, repeated=True)
