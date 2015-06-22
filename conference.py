@@ -27,6 +27,9 @@ from models import ConferenceForms
 from models import ConferenceQueryForm
 from models import ConferenceQueryForms
 
+from models import BooleanMessage
+from models import ConflictException
+
 from settings import WEB_CLIENT_ID
 
 from utils import getUserId
@@ -34,13 +37,40 @@ from utils import getUserId
 EMAIL_SCOPE = endpoints.EMAIL_SCOPE
 API_EXPLORER_CLIENT_ID = endpoints.API_EXPLORER_CLIENT_ID
 
-# - - - Default Values - - - - - - - - - - - - - - - - - - - 
+CONF_GET_REQUEST = endpoints.ResourceContainer(
+    message_types.VoidMessage,
+    websafeConferenceKey = messages.StringField(1),
+)
+
+
+CONF_POST_REQUEST = endpoints.ResourceContainer(
+    ConferenceForm,
+    websafeConferenceKey = messages.StringField(1),
+)
+
+# - - - Global Values - - - - - - - - - - - - - - - - - - - 
 
 DEFAULTS = {
     "city": "Kolkata",
     "maxAttendees": 0,
     "seatsAvailable": 0,
     "topics": [ "New Conference", "Programming" ],
+    }
+
+OPERATORS = {
+            'EQ':   '=',
+            'GT':   '>',
+            'GTEQ': '>=',
+            'LT':   '<',
+            'LTEQ': '<=',
+            'NE':   '!='
+    }
+
+FIELDS =    {
+            'CITY': 'city',
+            'TOPIC': 'topics',
+            'MONTH': 'month',
+            'MAX_ATTENDEES': 'maxAttendees',
     }
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -53,7 +83,7 @@ class ConferenceApi(remote.Service):
     """Conference API v0.1"""
 
 # - - - Profile objects - - - - - - - - - - - - - - - - - - -
-    
+
     def _copyProfileToForm(self, prof):
         """Copy relevant fields from Profile to ProfileForm."""
         # copy relevant fields from Profile to ProfileForm
@@ -84,9 +114,10 @@ class ConferenceApi(remote.Service):
             profile = Profile(
                 userId = user_id,
                 key = p_key,
-                displayName = "Fucker", 
+                displayName = user.nickname(), 
                 mainEmail= user.email(),
                 teeShirtSize = str(TeeShirtSize.NOT_SPECIFIED),
+                
             )
 
             profile.put()
@@ -126,6 +157,53 @@ class ConferenceApi(remote.Service):
         return self._doProfile(request)
 
 # - - - Conference objects - - - - - - - - - - - - - - - - -
+    def _getQuery(self, request):
+        """Return formatted query from the submitted filters."""
+        q = Conference.query()
+        inequality_filter, filters = self._formatFilters(request.filters)
+
+        # If exists, sort on inequality filter first
+        if not inequality_filter:
+            q = q.order(Conference.name)
+        else:
+            q = q.order(ndb.GenericProperty(inequality_filter))
+            q = q.order(Conference.name)
+
+        for filter in filters:
+            if filter['field'] in ['month', 'maxAttendees']:
+                filter['value'] = int(filter['value'])
+            elif filter['field'] in ['city', 'topics']:
+                filter['value'] = filter['value'].title()
+            formatted_query = ndb.query.FilterNode(filter['field'], filter['operator'], filter['value'])
+            q = q.filter(formatted_query)
+        return q
+
+    def _formatFilters(self, filters):
+        """Parse, check validity and format user supplied filters."""
+        formatted_filters = []
+        inequality_field = None
+
+        for f in filters:
+            filter = {field.name: getattr(f, field.name) for field in f.all_fields()}
+
+            try:
+                filter['field'] = FIELDS[filter['field']]
+                filter['operator'] = OPERATORS[filter['operator']]
+            except KeyError:
+                raise endpoints.BadRequestException("Filter contains invalid field or operator.")
+
+            # Every operation except "=" is inequality
+            if filter['operator'] != "=":
+                if inequality_field and inequality_field != filter['field']:
+                    raise endpoints.BadRequestException('Inequality filter is allowed on only one field.')
+                else:
+                    inequality_field = filter['field']
+
+
+            formatted_filters.append(filter)
+        return (inequality_field, formatted_filters)
+
+
 
     def _copyConferenceToForm(self, conf, displayName):
         """Copy relevant fields from Conference to ConferenceForm."""
@@ -139,6 +217,7 @@ class ConferenceApi(remote.Service):
                     setattr(cf, field.name, getattr(conf, field.name))
             elif field.name == "websafeKey":
                 setattr(cf, field.name, conf.key.urlsafe())
+
         if displayName:
             setattr(cf, 'organizerDisplayName', displayName)
         cf.check_initialized()
@@ -196,6 +275,45 @@ class ConferenceApi(remote.Service):
 
         return request
 
+    @ndb.transactional()
+    def _updateConferenceObject(self, request):
+        """Return updated ConferenceForm"""
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+        user_id = getUserId(user)
+
+        # copy conferenceform/protoRPC message into dict
+        data = {field.name:getattr(request, field.name) for field in request.all_fields()}
+
+        # update existing conference
+        conf = ndb.Key(urlsafe=request.websafeConferenceKey).get()
+        # check that conference exists
+        if not conf:
+            raise endswith.NotFoundException('No conference found with key:%s'%request.websafeConferenceKey)
+
+        # check that user is owner
+        if user_id != conf.organizerUserId:
+            raise endpoints.ForbiddenException(
+                    'Only the owner can update the conference')
+
+        # Not getting all the fields, so don't create a new object; just
+        # copy relevant fields from ConferenceForm to Conference object
+        for field in request.all_fields():
+            data = getattr(request, field.name)
+            # only copy fields where we get data
+            if field.name not in (None,[]):
+                # special handling for dates (convert string to date)
+                if field.name in ('startDate', 'endDate'):
+                    data = datetime.strptime("%Y-%m-%d").date()
+                    if field.name == 'startDate':
+                        conf.month = data.month
+
+                # write to conference object
+                setattr(conf, field.name, data)
+        conf.put()
+        prof = ndb.Key(Profile, user_id).get()
+        return self._copyConferenceToForm(conf, getattr(prof, 'displayName'))
 
     @endpoints.method(ConferenceForm, ConferenceForm, path='conference',
             http_method='POST', name='createConference')
@@ -209,13 +327,38 @@ class ConferenceApi(remote.Service):
             name='queryConferences')
     def queryConferences(self, request):
         """Query for conferences."""
-        conferences = Conference.query()
-
+        conferences = self._getQuery(request)
+        
+        organizers = [ndb.Key(Profile, conf.organizerUserId) for conf in conferences]
+        profiles = ndb.get_multi(organizers)
+        names = {}
+        for profile in profiles:
+            names[profile.key.id()] = profile.displayName
          # return individual ConferenceForm object per Conference
         return ConferenceForms(
-            items=[self._copyConferenceToForm(conf, "") \
+            items=[self._copyConferenceToForm(conf, names[conf.organizerUserId]) \
             for conf in conferences]
         )
+
+    @endpoints.method(CONF_POST_REQUEST, ConferenceForm,
+        path='conference/{websafeConferenceKey}',
+        http_method='PUT', name='updateConference')
+    def updateConference(self, request):
+        """Update conference -- provided field & return updated ConferenceForm."""
+        return self._updateConferenceObject(request)
+
+    @endpoints.method(CONF_GET_REQUEST, ConferenceForm,
+        path='conference/{websafeConferenceKey}',
+        http_method="GET", name='getConference')
+    def getConference(self, request):
+        """Return requested conference by websafeConferenceKey."""
+        # get Conference object from request; bail if not found
+        conf = ndb.Key(urlsafe=request.websafeConferenceKey).get()
+        if not conf:
+            raise endpoints.NotFoundException('No conference found with key=%s'%request.websafeConferenceKey)
+        prof = conf.key.parent().get()
+        # return ConferenceForm
+        return self._copyConferenceToForm(conf, getattr(prof, 'displayName'))
 
     @endpoints.method(message_types.VoidMessage, ConferenceForms,
         path='getConferencesCreated',
@@ -239,20 +382,81 @@ class ConferenceApi(remote.Service):
             items=[self._copyConferenceToForm(conf, displayName) for conf in conferences]
         )
 
+
     @endpoints.method(message_types.VoidMessage, ConferenceForms,
-        path='filterPlayground',
-        http_method='POST', name='filterPlayground')
-    def filterPlayground(self, request):
-        """Query of kind and Filter by property"""
-        q = Conference.query()
-        q = q.filter(Conference.city == "London")
-        q = q.filter(Conference.topics == "Medical Innovations")
-        q = q.order(Conference.name)
+        path='conference/attending',
+        http_method='GET', name='getConferencesToAttend')
+    def getConferencesToAttend(self, request):
+        """Get list of conferences that user has registered for."""
+        user = self._getProfileFromUser()
+        
+        confToAttend = []
+        for field in user.conferenceKeysToAttend:
+            confKey = ndb.Key(urlsafe=field).get()
+            confToAttend.append(confKey)
+
+        conferences = ndb.get_multi(confToAttend)
+        print confToAttend
         return ConferenceForms(
-            items=[self._copyConferenceToForm(conf, "") for conf in q]
+            items=[self._copyConferenceToForm(conf, "") for conf in conferences]
         )
 
-    
+# - - - Registration - - - - - - - - - - - - - - - - - - - - - - - - 
+    @ndb.transactional(xg=True)
+    def _conferenceRegistration(self, request, reg=True):
+        """Register or unregister user for selected conference."""
+        retval = True
+        prof = self._getProfileFromUser() # get user profile 
+
+        # check if conf exists given websafeConfKey
+        # get conference; check that it exists
+        wsck = request.websafeConferenceKey
+        conf = ndb.Key(urlsafe=wsck).get()
+        if not conf:
+            raise endswith.NotFoundException(
+                'No conference found with key: %s'%wsck)
+
+        # register
+        if reg:
+            # check if user already register otherwise add
+            if wsck in prof.conferenceKeysToAttend:
+                raise ConflictException(
+                    'You have already registered for this conference')
+
+            # check if seats available
+            if conf.seatsAvailable <= 0:
+                raise ConflictException(
+                    "There are no seats available.")
+
+            # register user, take away one seat 
+            prof.conferenceKeysToAttend.append(wsck)
+            conf.seatsAvailable -= 1
+            retval = True
+
+        # unregister
+        else:
+            # check if user already registered
+            if wsck in prof.conferenceKeysToAttend:
+
+                # unregister user, add back one seat
+                prof.conferenceKeysToAttend.remove(wsck)
+                conf.seatsAvailable += 1
+                retval = True
+            else:
+                retval = False
+
+
+        # write things back to the datastore & return 
+        prof.put()
+        conf.put()
+        return BooleanMessage(data=retval)
+
+    @endpoints.method(CONF_GET_REQUEST, BooleanMessage,
+        path='conference/{websafeConferenceKey}',
+        http_method='POST', name='registerForConference')
+    def registerForConference(self, request):
+        """Register user for selected conference."""
+        return self._conferenceRegistration(request)
 
 # registers API
 api = endpoints.api_server([ConferenceApi]) 
