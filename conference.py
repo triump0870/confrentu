@@ -330,7 +330,9 @@ class ConferenceApi(remote.Service):
         conferences = self._getQuery(request)
         
         organizers = [ndb.Key(Profile, conf.organizerUserId) for conf in conferences]
+        
         profiles = ndb.get_multi(organizers)
+
         names = {}
         for profile in profiles:
             names[profile.key.id()] = profile.displayName
@@ -383,22 +385,34 @@ class ConferenceApi(remote.Service):
         )
 
 
-    @endpoints.method(message_types.VoidMessage, ConferenceForms,
+    @endpoints.method(CONF_GET_REQUEST, ConferenceForms,
         path='conference/attending',
         http_method='GET', name='getConferencesToAttend')
-    def getConferencesToAttend(self, request):
+    def getConferencesAttend(self, request):
         """Get list of conferences that user has registered for."""
-        user = self._getProfileFromUser()
-        
-        confToAttend = []
-        for field in user.conferenceKeysToAttend:
-            confKey = ndb.Key(urlsafe=field).get()
-            confToAttend.append(confKey)
 
+        # Get user profile from the user
+        user = self._getProfileFromUser()
+
+        # get all the conference keys that user will attend or attended
+        confToAttend = [ndb.Key(urlsafe=key) for key in user.conferenceKeysToAttend]
+
+        # Fetch all the conferences from the datastore maching the keys at once
         conferences = ndb.get_multi(confToAttend)
-        print confToAttend
+
+        # Extract the organizerUserId from the conferences
+        names = [conf.organizerUserId for conf in conferences]
+
+        # get the profiles of the organizers
+        p_keys = [ndb.Key(Profile, name) for name in names]
+        profiles = ndb.get_multi(p_keys)
+
+        display = {}
+        for profile in profiles:
+            display[profile.key.id()] = profile.displayName
+
         return ConferenceForms(
-            items=[self._copyConferenceToForm(conf, "") for conf in conferences]
+            items=[self._copyConferenceToForm(conf, display[conf.organizerUserId]) for conf in conferences]
         )
 
 # - - - Registration - - - - - - - - - - - - - - - - - - - - - - - - 
@@ -446,7 +460,7 @@ class ConferenceApi(remote.Service):
                 retval = False
 
 
-        # write things back to the datastore & return 
+        # write things back to the datastore & return
         prof.put()
         conf.put()
         return BooleanMessage(data=retval)
@@ -457,6 +471,14 @@ class ConferenceApi(remote.Service):
     def registerForConference(self, request):
         """Register user for selected conference."""
         return self._conferenceRegistration(request)
+
+    @endpoints.method(CONF_GET_REQUEST, BooleanMessage,
+        path='Conference/{websafeConferenceKey}',
+        http_method='GET', name='unregisterFromConference')
+    def unregisterFromConference(self, request):
+        """Unregister user from selected conference."""
+        return self._conferenceRegistration(request, reg=False)
+
 
 # registers API
 api = endpoints.api_server([ConferenceApi]) 
