@@ -15,6 +15,8 @@ from protorpc import remote
 
 from google.appengine.api import urlfetch
 from google.appengine.ext import ndb
+from google.appengine.api import memcache
+from google.appengine.api import taskqueue
 
 from models import Profile
 from models import ProfileMiniForm
@@ -30,12 +32,15 @@ from models import ConferenceQueryForms
 from models import BooleanMessage
 from models import ConflictException
 
+from models import StringMessage
+
 from settings import WEB_CLIENT_ID
 
 from utils import getUserId
 
 EMAIL_SCOPE = endpoints.EMAIL_SCOPE
 API_EXPLORER_CLIENT_ID = endpoints.API_EXPLORER_CLIENT_ID
+MEMCACHE_ANNOUNCEMENTS_KEY = "RECENT_ANNOUNCEMENTS"
 
 CONF_GET_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
@@ -116,8 +121,7 @@ class ConferenceApi(remote.Service):
                 key = p_key,
                 displayName = user.nickname(), 
                 mainEmail= user.email(),
-                teeShirtSize = str(TeeShirtSize.NOT_SPECIFIED),
-                
+                teeShirtSize = str(TeeShirtSize.NOT_SPECIFIED),  
             )
 
             profile.put()
@@ -272,7 +276,10 @@ class ConferenceApi(remote.Service):
 
         # create Conference & return (modified) ConferenceForm
         Conference(**data).put()
-
+        taskqueue.add(params={'email':user.email(),
+            'conferenceInfo':repr(request)},
+            url='/tasks/send_confirmation_email'
+        )
         return request
 
     @ndb.transactional()
@@ -329,14 +336,18 @@ class ConferenceApi(remote.Service):
         """Query for conferences."""
         conferences = self._getQuery(request)
         
+        # Get the organizers profile
         organizers = [ndb.Key(Profile, conf.organizerUserId) for conf in conferences]
         
         profiles = ndb.get_multi(organizers)
-
         names = {}
+        
         for profile in profiles:
-            names[profile.key.id()] = profile.displayName
-         # return individual ConferenceForm object per Conference
+            if profile != None:
+                names[profile.key.id()] = profile.displayName
+            
+        # return individual ConferenceForm object per Conference
+        
         return ConferenceForms(
             items=[self._copyConferenceToForm(conf, names[conf.organizerUserId]) \
             for conf in conferences]
@@ -388,7 +399,7 @@ class ConferenceApi(remote.Service):
     @endpoints.method(CONF_GET_REQUEST, ConferenceForms,
         path='conference/attending',
         http_method='GET', name='getConferencesToAttend')
-    def getConferencesAttend(self, request):
+    def getConferencesToAttend(self, request):
         """Get list of conferences that user has registered for."""
 
         # Get user profile from the user
@@ -419,7 +430,7 @@ class ConferenceApi(remote.Service):
     @ndb.transactional(xg=True)
     def _conferenceRegistration(self, request, reg=True):
         """Register or unregister user for selected conference."""
-        retval = True
+        retval = None
         prof = self._getProfileFromUser() # get user profile 
 
         # check if conf exists given websafeConfKey
@@ -479,6 +490,43 @@ class ConferenceApi(remote.Service):
         """Unregister user from selected conference."""
         return self._conferenceRegistration(request, reg=False)
 
+# - - - Announcements - - - - - - - - - - - - - - - - - - - - - -
+
+    @staticmethod
+    def _cacheAnnouncements():
+        """Create Announcements & assign them to memcache; used by
+        memcache cron jobs & putAnnoucement().
+        """
+        conf = Conference.query(ndb.AND(
+            Conference.seatsAvailable <= 5,
+            Conference.seatsAvailable >0)
+        ).fetch(projection=[Conference.name])
+
+        if conf:
+            # If there almost sold out conferences,
+            # format announcements and put them into memcache;
+            announcement = '%s %s'%(
+                'Last chance to attend! The following conferences '
+                'are nearly sold out:',
+                ', '.join(con for con in conf))
+            memcache.set(MEMCACHE_ANNOUNCEMENTS_KEY, announcement)
+        else:
+            # If there are no sold out conferences,
+            # delete the memcache announcement entry
+            announcement = ""
+            memcache.delete(MEMCACHE_ANNOUNCEMENTS_KEY)
+
+        return announcement
+
+    @endpoints.method(message_types.VoidMessage, StringMessage,
+        path='conference/announcement/get',
+        http_method='GET', name='getAnnouncement')
+    def getAnnouncement(self, request):
+        """Return announcement from memcache."""
+        announcement = memcache.get(MEMCACHE_ANNOUNCEMENTS_KEY)
+        if not announcement:
+            announcement = ""
+        return StringMessage(data=announcement)
 
 # registers API
 api = endpoints.api_server([ConferenceApi]) 

@@ -16,12 +16,8 @@
                 <h2>{{conference.name}}</h2>
                 <h5>{{conference.description}}</h5>
                 <div>
-                    <label for="seats">Total Available Seats: </label>
-                    <span>{{conference.maxAttendees}}</span>
-                </div>
-                <div>
                     <label for="registered">Registered/Open: </label>
-                    <span id="registered">{{conference.maxAttendees - conference.seatsAvailable}} / {{conference.seatsAvailable}}</span>
+                    <span id="registered">{{conference.maxAttendees - conference.seatsAvailable}} / {{conference.maxAttendees}}</span>
                 </div>
                 <div>
                     <label for="organizer">Organizer: </label>
